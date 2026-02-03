@@ -1,0 +1,21 @@
+{
+  "name": "@0xaxiom/agentguard-evm",
+  "version": "0.1.0",
+  "description": "Security middleware for Base/EVM agents",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest"
+  },
+  "keywords": ["evm", "base", "agent", "security", "middleware"],
+  "author": "Axiom <axiombot@proton.me>",
+  "license": "MIT",
+  "dependencies": {
+    "viem": "^2.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.0",
+    "vitest": "^1.0.0"
+  }
+}
