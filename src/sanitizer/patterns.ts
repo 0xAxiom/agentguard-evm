@@ -139,11 +139,11 @@ export const UNICODE_PATTERNS = {
   // Homoglyph confusables (lookalike characters)
   CYRILLIC_CONFUSABLES: /[\u0400-\u04FF]/g, // Cyrillic block
   
-  // Tag characters (hidden metadata)
-  TAG_CHARS: /[\uE0000-\uE007F]/g,
+  // Tag characters (hidden metadata) 
+  TAG_CHARS: /[\u{E0000}-\u{E007F}]/gu,
   
   // Variation selectors
-  VARIATION_SELECTORS: /[\uFE00-\uFE0F\uE0100-\uE01EF]/g,
+  VARIATION_SELECTORS: /[\uFE00-\uFE0F\u{E0100}-\u{E01EF}]/gu,
   
   // Control characters (except common whitespace)
   CONTROL_CHARS: /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g,

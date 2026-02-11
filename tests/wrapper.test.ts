@@ -3,28 +3,27 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { GuardedEVMAgent, createGuardedAgent } from '../src/wrapper';
-import { AgentGuard } from '../src/guard';
 import { parseEther, type Address, type Account } from 'viem';
 
-// Mock viem
-vi.mock('viem', async () => {
-  const actual = await vi.importActual('viem');
+// Mock viem clients before importing the wrapper
+vi.mock('viem', () => {
   return {
-    ...actual,
-    createWalletClient: vi.fn().mockReturnValue({
-      account: {
-        address: '0x742d35Cc6634C0532925a3b8D23C5d3ce87CDD4b'
-      },
-      sendTransaction: vi.fn().mockResolvedValue('0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef')
+    createWalletClient: vi.fn(),
+    createPublicClient: vi.fn(),
+    http: vi.fn(),
+    parseEther: vi.fn((val: string) => {
+      const num = parseFloat(val);
+      return BigInt(Math.floor(num * 10**18));
     }),
-    createPublicClient: vi.fn().mockReturnValue({
-      estimateGas: vi.fn().mockResolvedValue(21000n),
-      getBalance: vi.fn().mockResolvedValue(parseEther('1')),
-      call: vi.fn().mockResolvedValue({ data: '0x00000000000000000000000000000000000000000000000000b1a2bc2ec50000' })
-    })
+    formatEther: vi.fn((val: bigint) => (Number(val) / 10**18).toString()),
+    isAddress: vi.fn(() => true),
+    getAddress: vi.fn((addr: string) => addr),
   };
 });
+
+// Import after mocking
+import { GuardedEVMAgent, createGuardedAgent } from '../src/wrapper';
+import { AgentGuard } from '../src/guard';
 
 describe('GuardedEVMAgent', () => {
   let agent: GuardedEVMAgent;

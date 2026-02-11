@@ -151,7 +151,39 @@ export class AgentGuard {
    * Get audit statistics
    */
   async getStats() {
-    return this.audit.getStats();
+    const auditStats = await this.audit.getStats();
+    return {
+      transactionChecks: auditStats.byAction.transaction || 0,
+      sanitizations: auditStats.byAction.sanitize || 0,
+      redactions: auditStats.byAction.redact || 0,
+      blockedTransactions: auditStats.blockedTransactions,
+      threatsDetected: auditStats.threatsDetected,
+      secretsRedacted: auditStats.secretsRedacted,
+      totalEntries: auditStats.totalEntries,
+      byAction: auditStats.byAction
+    };
+  }
+
+  /**
+   * Quick check if input is safe (synchronous)
+   */
+  isSafeInput(text: string): boolean {
+    return this.sanitizer.isSafe(text);
+  }
+
+  /**
+   * Quick check if output contains secrets (synchronous)
+   */
+  containsSecrets(text: string): boolean {
+    const result = this.isolator.redact(text);
+    return result.redacted;
+  }
+
+  /**
+   * Export audit log as string
+   */
+  async exportAuditLog(): Promise<string> {
+    return this.audit.export();
   }
 
   // Presets

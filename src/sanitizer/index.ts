@@ -199,7 +199,7 @@ export class PromptSanitizer {
     ];
 
     for (const check of unicodeChecks) {
-      const matches = text.matchAll(new RegExp(check.pattern.source, 'g'));
+      const matches = text.matchAll(new RegExp(check.pattern.source, check.pattern.flags));
       for (const match of matches) {
         threats.push({
           type: 'unicode',
