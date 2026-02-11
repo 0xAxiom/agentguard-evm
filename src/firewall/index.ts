@@ -1,224 +1,222 @@
 /**
- * EVM Transaction Firewall
+ * EVM Transaction Firewall - Core security layer for EVM agent transactions
  * 
- * Security layer for Base/EVM agent transactions:
- * - Spending limits (ETH + ERC20)
- * - Contract allowlists/blocklists
- * - Transaction simulation via eth_call
- * - Gas limits
+ * Features:
+ * - Daily/per-tx spending limits
+ * - Contract allowlist/blocklist  
+ * - Transaction simulation before execution
+ * - Detailed rejection reasons
  */
 
-import { 
-  createPublicClient, 
-  http, 
-  parseEther, 
-  formatEther,
-  decodeAbiParameters,
-  type TransactionRequest,
-  type Address,
-  type Hash
-} from 'viem';
-import { base, mainnet } from 'viem/chains';
+import type { TransactionRequest, Address } from 'viem';
+import { SpendingLimits, SpendingLimitConfig } from './limits';
+import { ContractAllowlist, AllowlistConfig, ContractCheckResult } from './allowlist';
+import { TransactionSimulator, SimulationResult, SimulatorConfig } from './simulator';
 
 export interface FirewallConfig {
-  /** Maximum daily spend in wei */
-  maxDailySpend: bigint;
-  /** Maximum per-transaction spend in wei */
-  maxPerTxSpend: bigint;
-  /** Allowed contract addresses (if set, only these allowed) */
-  allowedContracts?: Address[];
-  /** Blocked contract addresses (always blocked) */
-  blockedContracts?: Address[];
-  /** Maximum gas limit per tx */
-  maxGasLimit?: bigint;
-  /** Require simulation before execution */
-  requireSimulation?: boolean;
-  /** RPC URL */
+  maxDailySpend: bigint;        // wei
+  maxPerTxSpend: bigint;        // wei
+  allowedContracts?: Address[]; // if set, only these allowed
+  blockedContracts?: Address[]; // always blocked
+  requireSimulation?: boolean;  // simulate before allowing
   rpcUrl?: string;
-  /** Chain (default: base) */
   chain?: 'base' | 'mainnet';
+  payerAddress?: Address;       // for spend estimation
 }
 
 export interface FirewallResult {
   allowed: boolean;
   reason?: string;
-  warnings: string[];
-  simulation?: SimulationResult;
-  valueWei?: bigint;
+  warnings?: string[];
+  simulationResult?: SimulationResult;
+  contractsChecked?: ContractCheckResult[];
+  estimatedSpend?: bigint;
 }
 
-export interface SimulationResult {
-  success: boolean;
-  gasUsed?: bigint;
-  returnData?: string;
-  error?: string;
+export interface FirewallStatus {
+  spending: {
+    dailySpend: bigint;
+    dailyLimit: bigint;
+    perTxLimit: bigint;
+    remainingDaily: bigint;
+  };
+  contracts: {
+    mode: 'allowlist' | 'blocklist_only';
+    allowlistSize: number | null;
+    blocklistSize: number;
+  };
+  requireSimulation: boolean;
 }
-
-// Known malicious contracts (add more as discovered)
-const KNOWN_MALICIOUS: Address[] = [
-  // Add known drainers, phishing contracts, etc.
-];
-
-// Safe system contracts
-const SAFE_CONTRACTS: Address[] = [
-  '0x4200000000000000000000000000000000000006', // WETH on Base
-  '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', // USDC on Base
-];
 
 export class TransactionFirewall {
-  private config: FirewallConfig;
-  private dailySpent: bigint = 0n;
-  private lastResetDay: number = 0;
-  private client: ReturnType<typeof createPublicClient>;
+  private readonly limits: SpendingLimits;
+  private readonly allowlist: ContractAllowlist;
+  private readonly simulator: TransactionSimulator;
+  private readonly requireSimulation: boolean;
+  private readonly payerAddress?: Address;
 
   constructor(config: FirewallConfig) {
-    this.config = {
-      maxGasLimit: config.maxGasLimit ?? 500000n,
-      requireSimulation: config.requireSimulation ?? true,
-      ...config
-    };
-
-    const chain = config.chain === 'mainnet' ? mainnet : base;
-    this.client = createPublicClient({
-      chain,
-      transport: http(config.rpcUrl || 'https://mainnet.base.org')
+    // Initialize spending limits
+    this.limits = new SpendingLimits({
+      maxDailySpend: config.maxDailySpend,
+      maxPerTxSpend: config.maxPerTxSpend,
     });
+
+    // Initialize contract allowlist
+    this.allowlist = new ContractAllowlist({
+      allowedContracts: config.allowedContracts,
+      blockedContracts: config.blockedContracts,
+    });
+
+    // Initialize simulator
+    this.simulator = new TransactionSimulator({
+      rpcUrl: config.rpcUrl,
+      chain: config.chain,
+    });
+
+    this.requireSimulation = config.requireSimulation ?? true;
+    this.payerAddress = config.payerAddress;
   }
 
   /**
-   * Check if a transaction is allowed
+   * Check if a transaction is allowed through the firewall
    */
   async check(tx: TransactionRequest): Promise<FirewallResult> {
     const warnings: string[] = [];
-    
-    // Reset daily counter if new day
-    this.resetDailyIfNeeded();
+    let simulationResult: SimulationResult | undefined;
+    let estimatedSpend: bigint | undefined;
 
-    // 1. Check value limits
-    const value = tx.value ?? 0n;
+    // Step 1: Check contracts against allowlist/blocklist
+    const contractAddresses = this.simulator.extractContractAddresses(tx);
+    const contractChecks = this.allowlist.checkAll(contractAddresses);
     
-    if (value > this.config.maxPerTxSpend) {
+    const blockedContract = contractChecks.find(c => !c.allowed);
+    if (blockedContract) {
       return {
         allowed: false,
-        reason: `Transaction value ${formatEther(value)} ETH exceeds per-tx limit ${formatEther(this.config.maxPerTxSpend)} ETH`,
+        reason: blockedContract.reason,
+        contractsChecked: contractChecks,
         warnings,
-        valueWei: value
       };
     }
 
-    if (this.dailySpent + value > this.config.maxDailySpend) {
-      return {
-        allowed: false,
-        reason: `Transaction would exceed daily limit. Spent: ${formatEther(this.dailySpent)}, Tx: ${formatEther(value)}, Limit: ${formatEther(this.config.maxDailySpend)}`,
-        warnings,
-        valueWei: value
-      };
-    }
+    // Step 2: Estimate spending
+    if (this.payerAddress) {
+      const spendEstimate = await this.simulator.estimateSpend(tx, this.payerAddress);
+      estimatedSpend = spendEstimate.estimatedSpend;
+      warnings.push(...spendEstimate.warnings);
 
-    // 2. Check contract allowlist/blocklist
-    if (tx.to) {
-      const target = tx.to.toLowerCase() as Address;
-
-      // Check blocklist
-      const isBlocked = [
-        ...KNOWN_MALICIOUS,
-        ...(this.config.blockedContracts || [])
-      ].some(addr => addr.toLowerCase() === target);
-
-      if (isBlocked) {
+      // Check against spending limits
+      const limitCheck = this.limits.check(estimatedSpend);
+      if (!limitCheck.allowed) {
         return {
           allowed: false,
-          reason: `Contract ${tx.to} is on blocklist`,
+          reason: limitCheck.reason,
+          contractsChecked: contractChecks,
+          estimatedSpend,
           warnings,
-          valueWei: value
         };
       }
-
-      // Check allowlist (if configured)
-      if (this.config.allowedContracts && this.config.allowedContracts.length > 0) {
-        const isAllowed = [
-          ...SAFE_CONTRACTS,
-          ...this.config.allowedContracts
-        ].some(addr => addr.toLowerCase() === target);
-
-        if (!isAllowed) {
-          return {
-            allowed: false,
-            reason: `Contract ${tx.to} is not on allowlist`,
-            warnings,
-            valueWei: value
-          };
-        }
-      }
+    } else {
+      // No payer address - can't estimate spend, warn but continue
+      warnings.push('No payer address provided - spending limits not enforced');
     }
 
-    // 3. Check gas limit
-    if (tx.gas && this.config.maxGasLimit && tx.gas > this.config.maxGasLimit) {
-      return {
-        allowed: false,
-        reason: `Gas limit ${tx.gas} exceeds maximum ${this.config.maxGasLimit}`,
-        warnings,
-        valueWei: value
-      };
-    }
-
-    // 4. Simulate transaction
-    let simulation: SimulationResult | undefined;
-    if (this.config.requireSimulation && tx.to) {
-      simulation = await this.simulate(tx);
+    // Step 3: Simulate transaction (if required)
+    if (this.requireSimulation) {
+      simulationResult = await this.simulate(tx);
       
-      if (!simulation.success) {
+      if (!simulationResult.success) {
         return {
           allowed: false,
-          reason: `Simulation failed: ${simulation.error}`,
-          warnings,
-          simulation,
-          valueWei: value
+          reason: `Simulation failed: ${simulationResult.error}`,
+          simulationResult,
+          contractsChecked: contractChecks,
+          estimatedSpend,
+          warnings: [...warnings, ...simulationResult.warnings],
         };
       }
+      
+      warnings.push(...simulationResult.warnings);
     }
 
-    // 5. Check for suspicious patterns in calldata
+    // Step 4: Check for suspicious patterns in calldata
     if (tx.data) {
       const dataWarnings = this.checkCalldata(tx.data);
       warnings.push(...dataWarnings);
     }
 
-    // If we got here, transaction is allowed
-    // Update daily spent counter
-    this.dailySpent += value;
-
+    // All checks passed
     return {
       allowed: true,
-      warnings,
-      simulation,
-      valueWei: value
+      simulationResult,
+      contractsChecked: contractChecks,
+      estimatedSpend,
+      warnings: warnings.length > 0 ? warnings : undefined,
     };
   }
 
   /**
-   * Simulate a transaction via eth_call
+   * Simulate a transaction without full firewall checks
    */
   async simulate(tx: TransactionRequest): Promise<SimulationResult> {
-    try {
-      const result = await this.client.call({
-        to: tx.to,
-        data: tx.data,
-        value: tx.value,
-        gas: tx.gas,
-        account: tx.from
-      });
+    return this.simulator.simulate(tx, this.payerAddress);
+  }
 
-      return {
-        success: true,
-        returnData: result.data
-      };
-    } catch (error: any) {
-      return {
-        success: false,
-        error: error.message || 'Simulation failed'
-      };
-    }
+  /**
+   * Record a successful transaction's spend
+   * Call this after transaction is confirmed
+   */
+  recordSpend(amountWei: bigint): void {
+    this.limits.recordSpend(amountWei);
+  }
+
+  /**
+   * Reset daily spending limit counter
+   */
+  resetDailySpend(): void {
+    this.limits.resetDailySpend();
+  }
+
+  /**
+   * Get current firewall status
+   */
+  getStatus(): FirewallStatus {
+    const spendStatus = this.limits.getStatus();
+    const contractStatus = this.allowlist.getStatus();
+
+    return {
+      spending: {
+        dailySpend: spendStatus.dailySpend,
+        dailyLimit: spendStatus.dailyLimit,
+        perTxLimit: spendStatus.perTxLimit,
+        remainingDaily: spendStatus.dailyLimit - spendStatus.dailySpend,
+      },
+      contracts: contractStatus,
+      requireSimulation: this.requireSimulation,
+    };
+  }
+
+  /**
+   * Get remaining daily allowance
+   */
+  getRemainingDaily(): bigint {
+    const status = this.limits.getStatus();
+    return status.dailyLimit - status.dailySpend;
+  }
+
+  /**
+   * Add a contract to the blocklist at runtime
+   */
+  blockContract(contractAddress: Address): void {
+    this.allowlist.addToBlocklist(contractAddress);
+  }
+
+  /**
+   * Add a contract to the allowlist at runtime (if in allowlist mode)
+   */
+  allowContract(contractAddress: Address): boolean {
+    return this.allowlist.addToAllowlist(contractAddress);
   }
 
   /**
@@ -250,31 +248,9 @@ export class TransactionFirewall {
 
     return warnings;
   }
-
-  /**
-   * Reset daily counter if it's a new day
-   */
-  private resetDailyIfNeeded(): void {
-    const today = Math.floor(Date.now() / (24 * 60 * 60 * 1000));
-    if (today !== this.lastResetDay) {
-      this.dailySpent = 0n;
-      this.lastResetDay = today;
-    }
-  }
-
-  /**
-   * Get remaining daily allowance
-   */
-  getRemainingDaily(): bigint {
-    this.resetDailyIfNeeded();
-    return this.config.maxDailySpend - this.dailySpent;
-  }
-
-  /**
-   * Manually reset daily counter
-   */
-  resetDailySpend(): void {
-    this.dailySpent = 0n;
-    this.lastResetDay = Math.floor(Date.now() / (24 * 60 * 60 * 1000));
-  }
 }
+
+// Re-export types and utilities
+export { SpendingLimits, SpendingLimitConfig } from './limits';
+export { ContractAllowlist, AllowlistConfig, ContractCheckResult, SAFE_SYSTEM_CONTRACTS, KNOWN_MALICIOUS_CONTRACTS } from './allowlist';
+export { TransactionSimulator, SimulationResult, SimulatorConfig, BalanceChange } from './simulator';

@@ -21,9 +21,6 @@ export interface RedactResult {
   matches: SecretMatch[];
 }
 
-// Base58 alphabet for Solana keys
-const BASE58_CHARS = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
-
 // BIP39 wordlist (subset for detection)
 const BIP39_COMMON = ['abandon', 'ability', 'able', 'abstract', 'absurd', 'abuse', 'access', 'accident', 'account', 'accuse', 'achieve', 'acid', 'acoustic', 'acquire', 'across', 'act', 'action', 'actor', 'actress', 'actual', 'adapt', 'add', 'addict', 'address', 'adjust', 'admit', 'adult', 'advance', 'advice', 'aerobic', 'affair', 'afford', 'afraid', 'again', 'age', 'agent', 'agree', 'ahead', 'aim', 'air', 'airport', 'aisle', 'alarm', 'album', 'alcohol', 'alert', 'alien', 'all', 'alley', 'allow', 'almost', 'alone', 'alpha', 'already', 'also', 'alter', 'always', 'amateur', 'amazing', 'among', 'amount', 'amused', 'analyst', 'anchor', 'ancient', 'anger', 'angle', 'angry', 'animal', 'ankle', 'announce', 'annual', 'another', 'answer', 'antenna', 'antique', 'anxiety', 'any', 'apart', 'apology', 'appear', 'apple', 'approve', 'april', 'arch', 'arctic', 'area', 'arena', 'argue', 'arm', 'armed', 'armor', 'army', 'around', 'arrange', 'arrest', 'arrive', 'arrow', 'art', 'artefact', 'artist', 'artwork', 'ask', 'aspect', 'assault', 'asset', 'assist', 'assume', 'asthma', 'athlete', 'atom', 'attack', 'attend', 'attitude', 'attract', 'auction', 'audit', 'august', 'aunt', 'author', 'auto', 'autumn', 'average', 'avocado', 'avoid', 'awake', 'aware', 'away', 'awesome', 'awful', 'awkward', 'axis'];
 
@@ -40,25 +37,25 @@ export class SecretIsolator {
 
     // Build detection patterns
     this.patterns = [
-      // Solana private key (Base58, 88 chars) - starts with specific chars
-      /[1-9A-HJ-NP-Za-km-z]{87,88}/g,
+      // EVM private key (64 hex chars)
+      /\b0x[0-9a-fA-F]{64}\b/g,
       
-      // Hex private key (64 chars)
+      // Hex private key without 0x prefix (64 chars)
       /\b[0-9a-fA-F]{64}\b/g,
       
       // Seed phrases (12 or 24 words)
       new RegExp(`\\b(${BIP39_COMMON.join('|')})\\s+(${BIP39_COMMON.join('|')})(\\s+(${BIP39_COMMON.join('|')})){10,22}\\b`, 'gi'),
       
-      // Common API key patterns
-      /\b[A-Za-z0-9_-]{32,}\b/g,
+      // Common API key patterns (but shorter to avoid false positives)
+      /\b[A-Za-z0-9_-]{32,64}\b/g,
       
       // Environment variable leaks
-      /\b(PRIVATE_KEY|SECRET_KEY|API_KEY|AUTH_TOKEN|PASSWORD)\s*[=:]\s*['"]?[^\s'"]+['"]?/gi,
+      /\b(PRIVATE_KEY|SECRET_KEY|API_KEY|AUTH_TOKEN|PASSWORD|MNEMONIC|SEED_PHRASE)\s*[=:]\s*['"]?[^\s'"]+['"]?/gi,
       
       // AWS-style keys
       /AKIA[0-9A-Z]{16}/g,
       
-      // Generic long base64
+      // Generic long base64/hex patterns
       /[A-Za-z0-9+/]{40,}={0,2}/g,
       
       ...this.config.redactPatterns
@@ -66,29 +63,31 @@ export class SecretIsolator {
   }
 
   /**
-   * Check if a string looks like a Solana private key
+   * Check if a string looks like an EVM private key
    */
   private isLikelyPrivateKey(str: string): boolean {
-    // Check length (Solana private keys are 88 chars in Base58)
-    if (str.length !== 88 && str.length !== 87) return false;
-    
-    // Check all chars are Base58
-    for (const char of str) {
-      if (!BASE58_CHARS.includes(char)) return false;
+    // Check if it's a 64-character hex string
+    if (str.length === 64) {
+      return /^[0-9a-fA-F]{64}$/.test(str);
     }
     
-    return true;
+    // Check if it's a 0x-prefixed 64-char hex string  
+    if (str.length === 66 && str.startsWith('0x')) {
+      return /^0x[0-9a-fA-F]{64}$/.test(str);
+    }
+    
+    return false;
   }
 
   /**
-   * Check if a string looks like a public key (44 chars)
+   * Check if a string looks like an EVM address (should be allowed)
    */
-  private isLikelyPublicKey(str: string): boolean {
-    if (str.length !== 44 && str.length !== 43) return false;
-    for (const char of str) {
-      if (!BASE58_CHARS.includes(char)) return false;
+  private isLikelyAddress(str: string): boolean {
+    // EVM addresses are 42 chars: 0x + 40 hex chars
+    if (str.length === 42 && str.startsWith('0x')) {
+      return /^0x[0-9a-fA-F]{40}$/.test(str);
     }
-    return true;
+    return false;
   }
 
   /**
@@ -120,13 +119,13 @@ export class SecretIsolator {
       }
     }
 
-    // Check for Base58 strings (potential keys)
-    const base58Regex = /[1-9A-HJ-NP-Za-km-z]{40,90}/g;
-    while ((match = base58Regex.exec(text)) !== null) {
+    // Check for hex strings (potential keys or addresses)
+    const hexRegex = /\b0x[0-9a-fA-F]{40,66}\b/g;
+    while ((match = hexRegex.exec(text)) !== null) {
       const str = match[0];
       
-      // Skip if it's a public key and we allow those
-      if (this.config.allowPublicKeys && this.isLikelyPublicKey(str)) {
+      // Skip if it's an address and we allow those
+      if (this.config.allowPublicKeys && this.isLikelyAddress(str)) {
         continue;
       }
       
@@ -136,24 +135,29 @@ export class SecretIsolator {
           type: 'private_key',
           position: match.index,
           length: str.length,
-          preview: `${str.slice(0, 4)}...${str.slice(-4)}`
+          preview: `${str.slice(0, 6)}...${str.slice(-4)}`
         });
         clean = clean.replace(str, this.config.placeholder);
         redacted = true;
       }
     }
 
-    // Check for hex keys
+    // Check for bare hex keys (64 chars without 0x prefix)
     const hexKeyRegex = /\b[0-9a-fA-F]{64}\b/g;
     while ((match = hexKeyRegex.exec(text)) !== null) {
-      matches.push({
-        type: 'hex_key',
-        position: match.index,
-        length: match[0].length,
-        preview: `${match[0].slice(0, 4)}...${match[0].slice(-4)}`
-      });
-      clean = clean.replace(match[0], this.config.placeholder);
-      redacted = true;
+      const str = match[0];
+      
+      // Double-check it's likely a private key
+      if (this.isLikelyPrivateKey(str)) {
+        matches.push({
+          type: 'hex_key',
+          position: match.index,
+          length: str.length,
+          preview: `${str.slice(0, 4)}...${str.slice(-4)}`
+        });
+        clean = clean.replace(str, this.config.placeholder);
+        redacted = true;
+      }
     }
 
     // Check for env var leaks

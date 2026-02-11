@@ -175,20 +175,32 @@ export function decodeBase64(text: string): string | null {
 }
 
 /**
- * Check if text contains Solana address format
+ * Check if text contains EVM address format (0x...)
  */
-export function containsSolanaAddress(text: string): boolean {
-  // Solana addresses are base58 encoded, 32-44 chars
-  const solanaAddressRegex = /\b[1-9A-HJ-NP-Za-km-z]{32,44}\b/;
-  return solanaAddressRegex.test(text);
+export function containsEVMAddress(text: string): boolean {
+  // EVM addresses are 0x followed by 40 hex chars
+  const evmAddressRegex = /\b0x[a-fA-F0-9]{40}\b/;
+  return evmAddressRegex.test(text);
 }
 
 /**
- * Extract Solana addresses from text
+ * Extract EVM addresses from text
  */
-export function extractSolanaAddresses(text: string): string[] {
-  const regex = /\b[1-9A-HJ-NP-Za-km-z]{32,44}\b/g;
+export function extractEVMAddresses(text: string): string[] {
+  const regex = /\b0x[a-fA-F0-9]{40}\b/g;
   return text.match(regex) || [];
+}
+
+/**
+ * Check if text contains private key patterns (various formats)
+ */
+export function containsPrivateKey(text: string): boolean {
+  // 64 hex chars (common private key format)
+  const hexKeyRegex = /\b[a-fA-F0-9]{64}\b/;
+  // Base64-like private key patterns
+  const base64KeyRegex = /\b[A-Za-z0-9+/]{64,88}={0,2}\b/;
+  
+  return hexKeyRegex.test(text) || base64KeyRegex.test(text);
 }
 
 /**

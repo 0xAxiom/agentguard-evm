@@ -1,0 +1,60 @@
+# Source files (ship only dist/)
+src/
+tests/
+examples/
+
+# Development files
+.github/
+.vscode/
+.idea/
+*.config.js
+*.config.ts
+vitest.config.ts
+tsconfig.json
+
+# Documentation (keep README.md, LICENSE)
+ARCHITECTURE.md
+CONTRIBUTING.md
+SECURITY.md
+
+# Development dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+.pnpm-debug.log*
+
+# Coverage and testing
+coverage/
+.nyc_output/
+*.lcov
+.vitest/
+
+# Environment files
+.env*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+tmp/
+temp/
+
+# Logs
+logs/
+*.log
+
+# Local development
+.local/
+demo-output/
+agentguard-audit.json
+*.audit.json
+
+# Git
+.git/
+.gitignore
+
+# CI/CD
+.github/

@@ -357,7 +357,8 @@ export {
   truncate,
   looksLikeBase64,
   decodeBase64,
-  containsSolanaAddress,
-  extractSolanaAddresses,
+  containsEVMAddress,
+  extractEVMAddresses,
+  containsPrivateKey,
   fullClean
 } from './cleaner';
